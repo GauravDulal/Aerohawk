@@ -17,7 +17,8 @@ function BookingPageInner() {
   const [calYear, setCalYear] = useState(now.getFullYear());
   const [calMonth, setCalMonth] = useState(now.getMonth());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [selectedSlot, setSelectedSlot] = useState<AvailabilitySlot | null>(null);
+  const [selectedSlots, setSelectedSlots] = useState<AvailabilitySlot[]>([]);
+  const [anchorSlot, setAnchorSlot] = useState<AvailabilitySlot | null>(null);
 
   // Data
   const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
@@ -72,7 +73,8 @@ function BookingPageInner() {
     setCalMonth(newMonth);
     setCalYear(newYear);
     setSelectedDate(null);
-    setSelectedSlot(null);
+    setSelectedSlots([]);
+    setAnchorSlot(null);
   };
 
   // Get slots for a specific date
@@ -80,10 +82,12 @@ function BookingPageInner() {
     return slots.filter((s) => s.date === dateStr);
   };
 
-  // Check if a specific slot is booked
+  // Check if a specific slot is booked (using interval overlap check)
   const isSlotBooked = (dateStr: string, startTime: string, endTime: string) => {
     return bookedSlots.some(
-      (b) => b.date === dateStr && b.start_time === startTime && b.end_time === endTime
+      (b) =>
+        b.date === dateStr &&
+        !(b.end_time <= startTime || b.start_time >= endTime)
     );
   };
 
@@ -98,21 +102,80 @@ function BookingPageInner() {
   // Handle date selection
   const handleDateSelect = (dateStr: string) => {
     setSelectedDate(dateStr);
-    setSelectedSlot(null);
+    setSelectedSlots([]);
+    setAnchorSlot(null);
   };
 
-  // Handle slot selection
+  // Handle slot selection (consecutive range stacking using an anchor slot)
   const handleSlotSelect = (slot: AvailabilitySlot) => {
-    setSelectedSlot(slot);
+    if (selectedSlots.length === 0 || !anchorSlot) {
+      setAnchorSlot(slot);
+      setSelectedSlots([slot]);
+    } else {
+      if (anchorSlot.id === slot.id) {
+        setAnchorSlot(null);
+        setSelectedSlots([]);
+        return;
+      }
+
+      // Sort all configured slots for the day by start_time
+      const dateSlots = slots
+        .filter((s) => s.date === selectedDate)
+        .sort((a, b) => a.start_time.localeCompare(b.start_time));
+
+      const idx1 = dateSlots.findIndex((s) => s.id === anchorSlot.id);
+      const idx2 = dateSlots.findIndex((s) => s.id === slot.id);
+
+      if (idx1 !== -1 && idx2 !== -1) {
+        // If the clicked slot is already selected (other than anchor), shrink the range to exclude it
+        const isAlreadySelected = selectedSlots.some((s) => s.id === slot.id);
+        if (isAlreadySelected) {
+          if (idx2 > idx1) {
+            // Shrink from the right (keep slots from anchor up to but not including clicked slot)
+            const candidateSlots = dateSlots.slice(idx1, idx2);
+            setSelectedSlots(candidateSlots);
+          } else {
+            // Shrink from the left (keep slots from just after the clicked slot up to anchor)
+            const candidateSlots = dateSlots.slice(idx2 + 1, idx1 + 1);
+            setSelectedSlots(candidateSlots);
+          }
+          return;
+        }
+
+        const minIdx = Math.min(idx1, idx2);
+        const maxIdx = Math.max(idx1, idx2);
+        const candidateSlots = dateSlots.slice(minIdx, maxIdx + 1);
+
+        // Verify all intermediate slots are available (not booked, not in the past)
+        const allAvailable = candidateSlots.every(
+          (s) => s.id === anchorSlot.id || s.id === slot.id || (!isSlotBooked(s.date, s.start_time, s.end_time) && isSlotInFuture(s.date, s.start_time))
+        );
+
+        if (allAvailable) {
+          setSelectedSlots(candidateSlots);
+        } else {
+          // If range is blocked by booked/past slots, start a new selection with the clicked slot as anchor
+          setAnchorSlot(slot);
+          setSelectedSlots([slot]);
+        }
+      } else {
+        setAnchorSlot(slot);
+        setSelectedSlots([slot]);
+      }
+    }
   };
 
   // Form validation
-  const isFormValid = selectedDate && selectedSlot && name && phone && email && service && address;
+  const isFormValid = selectedDate && selectedSlots.length > 0 && name && phone && email && service && address;
 
   // Submit booking
   const handleSubmit = async () => {
-    if (!selectedDate || !selectedSlot) return;
+    if (!selectedDate || selectedSlots.length === 0) return;
     setSubmitting(true);
+
+    const sortedSelected = [...selectedSlots].sort((a, b) => a.start_time.localeCompare(b.start_time));
+    const startTime = sortedSelected[0].start_time;
+    const endTime = sortedSelected[sortedSelected.length - 1].end_time;
 
     const { data, error } = await supabase.rpc('book_appointment', {
       p_name: name,
@@ -122,8 +185,8 @@ function BookingPageInner() {
       p_address: address,
       p_notes: notes,
       p_date: selectedDate,
-      p_start_time: selectedSlot.start_time,
-      p_end_time: selectedSlot.end_time,
+      p_start_time: startTime,
+      p_end_time: endTime,
     });
 
     setSubmitting(false);
@@ -139,7 +202,7 @@ function BookingPageInner() {
       // Reset form
       setName(''); setPhone(''); setEmail(''); setService('');
       setAddress(''); setNotes('');
-      setSelectedDate(null); setSelectedSlot(null);
+      setSelectedDate(null); setSelectedSlots([]); setAnchorSlot(null);
       fetchData();
     } else {
       showToast(result?.error_message || 'Slot no longer available.', 'error');
@@ -261,7 +324,7 @@ function BookingPageInner() {
                     {dateSlots.map((slot) => {
                       const booked = isSlotBooked(selectedDate, slot.start_time, slot.end_time);
                       const pastSlot = !isSlotInFuture(selectedDate, slot.start_time);
-                      const isSelected = selectedSlot?.id === slot.id;
+                      const isSelected = selectedSlots.some((s) => s.id === slot.id);
 
                       let btnClass = 'slot-btn';
                       if (isSelected) btnClass += ' selected';
@@ -343,7 +406,7 @@ function BookingPageInner() {
               </div>
 
               {/* Booking Summary */}
-              {selectedDate && selectedSlot && (
+              {selectedDate && selectedSlots.length > 0 && (
                 <div className="booking-summary" style={{ display: 'block' }}>
                   <div className="summary-row">
                     <span className="summary-label">Date</span>
@@ -351,7 +414,12 @@ function BookingPageInner() {
                   </div>
                   <div className="summary-row">
                     <span className="summary-label">Time</span>
-                    <span className="summary-value">{formatTimeRange(selectedSlot.start_time, selectedSlot.end_time)}</span>
+                    <span className="summary-value">
+                      {(() => {
+                        const sorted = [...selectedSlots].sort((a, b) => a.start_time.localeCompare(b.start_time));
+                        return formatTimeRange(sorted[0].start_time, sorted[sorted.length - 1].end_time);
+                      })()}
+                    </span>
                   </div>
                   <div className="summary-row">
                     <span className="summary-label">Service</span>
@@ -382,7 +450,14 @@ function BookingPageInner() {
       <ConfirmModal
         open={modalOpen}
         title="Confirm Your Booking"
-        subtitle={selectedDate && selectedSlot ? `${formatDate(selectedDate)} at ${formatTimeRange(selectedSlot.start_time, selectedSlot.end_time)}` : ''}
+        subtitle={
+          selectedDate && selectedSlots.length > 0
+            ? (() => {
+                const sorted = [...selectedSlots].sort((a, b) => a.start_time.localeCompare(b.start_time));
+                return `${formatDate(selectedDate)} at ${formatTimeRange(sorted[0].start_time, sorted[sorted.length - 1].end_time)}`;
+              })()
+            : ''
+        }
         body={`Service: ${service}\nClient: ${name}\nAddress: ${address}\n\nPlease confirm your booking.`}
         confirmLabel="Confirm Booking"
         onConfirm={handleSubmit}

@@ -113,22 +113,22 @@ LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
   v_ref TEXT;
   v_existing INT;
+  v_total_duration INTERVAL;
 BEGIN
-  -- Lock the row to prevent concurrent bookings
+  -- Lock the rows to prevent concurrent bookings in the range
   PERFORM 1 FROM availability_slots
-    WHERE date = p_date AND start_time = p_start_time AND end_time = p_end_time
+    WHERE date = p_date AND start_time >= p_start_time AND end_time <= p_end_time
     FOR UPDATE;
 
-  -- Check if slot is already booked (non-cancelled)
+  -- Check if slot range overlaps with any already booked appointments (non-cancelled)
   SELECT COUNT(*) INTO v_existing
     FROM appointments
     WHERE date = p_date
-      AND start_time = p_start_time
-      AND end_time = p_end_time
-      AND status != 'cancelled';
+      AND status != 'cancelled'
+      AND NOT (end_time <= p_start_time OR start_time >= p_end_time);
 
   IF v_existing > 0 THEN
-    RETURN QUERY SELECT false, ''::TEXT, 'This slot has already been booked. Please choose another.'::TEXT;
+    RETURN QUERY SELECT false, ''::TEXT, 'Part of this slot range has already been booked. Please choose another.'::TEXT;
     RETURN;
   END IF;
 
@@ -138,9 +138,13 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Check slot exists
-  IF NOT EXISTS (SELECT 1 FROM availability_slots WHERE date = p_date AND start_time = p_start_time AND end_time = p_end_time) THEN
-    RETURN QUERY SELECT false, ''::TEXT, 'This time slot is no longer available.'::TEXT;
+  -- Check that the availability slots in the range exist and cover the entire duration
+  SELECT COALESCE(SUM(end_time - start_time), '0 hour'::INTERVAL) INTO v_total_duration
+    FROM availability_slots
+    WHERE date = p_date AND start_time >= p_start_time AND end_time <= p_end_time;
+
+  IF v_total_duration != (p_end_time - p_start_time) THEN
+    RETURN QUERY SELECT false, ''::TEXT, 'This time slot range is no longer fully available.'::TEXT;
     RETURN;
   END IF;
 

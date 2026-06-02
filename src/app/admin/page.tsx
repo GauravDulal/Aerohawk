@@ -157,9 +157,8 @@ export default function AdminDashboardPage() {
     return appointments.some(
       (a) =>
         a.date === slot.date &&
-        a.start_time === slot.start_time &&
-        a.end_time === slot.end_time &&
-        a.status !== 'cancelled'
+        a.status !== 'cancelled' &&
+        !(a.end_time <= slot.start_time || a.start_time >= slot.end_time)
     );
   };
 
