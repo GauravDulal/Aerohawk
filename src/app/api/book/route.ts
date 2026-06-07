@@ -1,37 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 
-// ── In-memory rate limiter ──
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+import { checkRateLimit } from '@/lib/redis';
+
+const RATE_LIMIT_WINDOW_SECONDS = 60 * 60; // 1 hour
 const RATE_LIMIT_MAX = 10; // 10 bookings per IP per hour
 
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(ip);
+// ── Cloudflare Turnstile verification ──
+async function verifyTurnstileToken(token: string, ip: string): Promise<boolean> {
+  const secretKey = process.env.CF_TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA';
+  
+  try {
+    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        secret: secretKey,
+        response: token,
+        remoteip: ip,
+      }),
+    });
 
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    const data = await response.json();
+    return !!data.success;
+  } catch (err) {
+    console.error('Turnstile verification error:', err);
     return false;
   }
-
-  entry.count++;
-  if (entry.count > RATE_LIMIT_MAX) {
-    return true;
-  }
-
-  return false;
 }
-
-// Clean up stale entries periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, value] of rateLimitMap.entries()) {
-    if (now > value.resetAt) {
-      rateLimitMap.delete(key);
-    }
-  }
-}, 5 * 60 * 1000); // Every 5 minutes
 
 // ── Validation ──
 const VALID_SERVICES = [
@@ -56,6 +54,7 @@ interface BookingRequest {
   date: string;
   start_time: string;
   end_time: string;
+  turnstile_token?: string;
 }
 
 function validateBooking(body: BookingRequest): string | null {
@@ -86,6 +85,9 @@ function validateBooking(body: BookingRequest): string | null {
   if (!body.end_time || !/^\d{2}:\d{2}(:\d{2})?$/.test(body.end_time)) {
     return 'Valid end time is required.';
   }
+  if (!body.turnstile_token) {
+    return 'Human verification is required.';
+  }
   return null;
 }
 
@@ -95,11 +97,15 @@ export async function POST(request: NextRequest) {
     || request.headers.get('x-real-ip')
     || 'unknown';
 
-  if (process.env.NODE_ENV !== 'development' && isRateLimited(ip)) {
-    return NextResponse.json(
-      { success: false, error_message: 'Too many booking attempts. Please try again later.' },
-      { status: 429 }
-    );
+  if (process.env.NODE_ENV !== 'development') {
+    const rateLimitKey = `ratelimit:book:${ip}`;
+    const { allowed } = await checkRateLimit(rateLimitKey, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SECONDS);
+    if (!allowed) {
+      return NextResponse.json(
+        { success: false, error_message: 'Too many booking attempts. Please try again later.' },
+        { status: 429 }
+      );
+    }
   }
 
   // Parse body
@@ -118,6 +124,15 @@ export async function POST(request: NextRequest) {
   if (validationError) {
     return NextResponse.json(
       { success: false, error_message: validationError },
+      { status: 400 }
+    );
+  }
+
+  // Verify Turnstile Token
+  const isHuman = await verifyTurnstileToken(body.turnstile_token || '', ip);
+  if (!isHuman) {
+    return NextResponse.json(
+      { success: false, error_message: 'Human verification failed. Please try again.' },
       { status: 400 }
     );
   }

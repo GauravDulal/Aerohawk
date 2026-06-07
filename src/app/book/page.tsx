@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
+import Script from 'next/script';
 import { createClient } from '@/lib/supabase/client';
 import { ToastProvider, useToast } from '@/components/ui/Toast';
 import ConfirmModal from '@/components/ui/ConfirmModal';
@@ -21,6 +22,22 @@ interface FormErrors {
   email?: string;
   service?: string;
   address?: string;
+}
+
+interface ExtendedWindow {
+  onloadTurnstileCallback?: () => void;
+  turnstile?: {
+    render: (
+      element: HTMLElement | string,
+      options: {
+        sitekey: string;
+        callback: (token: string) => void;
+        'expired-callback'?: () => void;
+        'error-callback'?: () => void;
+      }
+    ) => string;
+    remove: (widgetId: string) => void;
+  };
 }
 
 function BookingPageInner() {
@@ -63,6 +80,60 @@ function BookingPageInner() {
     service: string;
     name: string;
   } | null>(null);
+
+  // Turnstile CAPTCHA State
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileContainerRef = useRef<HTMLDivElement>(null);
+  const turnstileWidgetId = useRef<string | null>(null);
+
+  // Render Turnstile widget
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const extWindow = window as unknown as ExtendedWindow;
+
+    const renderWidget = () => {
+      if (!turnstileContainerRef.current || !extWindow.turnstile) return;
+
+      // Remove previous widget if it exists
+      if (turnstileWidgetId.current) {
+        try {
+          extWindow.turnstile.remove(turnstileWidgetId.current);
+        } catch { /* widget already removed */ }
+        turnstileWidgetId.current = null;
+      }
+
+      turnstileWidgetId.current = extWindow.turnstile.render(turnstileContainerRef.current, {
+        sitekey: process.env.NEXT_PUBLIC_CF_TURNSTILE_SITE_KEY || '1x00000000000000000000AA',
+        callback: (token: string) => {
+          setTurnstileToken(token);
+        },
+        'expired-callback': () => {
+          setTurnstileToken(null);
+        },
+        'error-callback': () => {
+          setTurnstileToken(null);
+        },
+      });
+    };
+
+    // If turnstile script is already loaded, render immediately
+    if (extWindow.turnstile) {
+      renderWidget();
+    }
+
+    // Set the onload callback for when the script finishes loading
+    extWindow.onloadTurnstileCallback = renderWidget;
+
+    return () => {
+      delete extWindow.onloadTurnstileCallback;
+      if (turnstileWidgetId.current && extWindow.turnstile) {
+        try {
+          extWindow.turnstile.remove(turnstileWidgetId.current);
+        } catch { /* widget already removed */ }
+        turnstileWidgetId.current = null;
+      }
+    };
+  }, []); // Only run once on mount
 
   const fetchData = useCallback(async () => {
     setDataLoading(true);
@@ -205,7 +276,7 @@ function BookingPageInner() {
     return Object.keys(errors).length === 0;
   };
 
-  const isFormValid = selectedDate && selectedSlots.length > 0 && name && phone && email && service && address;
+  const isFormValid = selectedDate && selectedSlots.length > 0 && name && phone && email && service && address && turnstileToken;
 
   // ── Submit booking via API route ──
   const handleSubmit = async () => {
@@ -236,6 +307,7 @@ function BookingPageInner() {
           date: selectedDate,
           start_time: startTime,
           end_time: endTime,
+          turnstile_token: turnstileToken,
         }),
       });
 
@@ -559,6 +631,9 @@ function BookingPageInner() {
                 )}
               </div>
 
+              {/* Cloudflare Turnstile */}
+              <div ref={turnstileContainerRef} style={{ marginTop: '1rem', marginBottom: '1rem' }} />
+
               {/* Booking Summary */}
               {selectedDate && selectedSlots.length > 0 && (
                 <div className="booking-summary" style={{ display: 'block' }}>
@@ -616,6 +691,11 @@ function BookingPageInner() {
         confirmLabel="Confirm Booking"
         onConfirm={handleSubmit}
         onCancel={() => setModalOpen(false)}
+      />
+
+      <Script
+        src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback"
+        strategy="afterInteractive"
       />
     </>
   );

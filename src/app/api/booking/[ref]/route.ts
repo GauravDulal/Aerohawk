@@ -1,21 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 
-// Rate limiting for lookup to prevent ref_code enumeration
-const lookupMap = new Map<string, { count: number; resetAt: number }>();
-const LOOKUP_LIMIT = 30; // 30 lookups per IP per hour
-const LOOKUP_WINDOW_MS = 60 * 60 * 1000;
+import { checkRateLimit } from '@/lib/redis';
 
-function isLookupRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = lookupMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    lookupMap.set(ip, { count: 1, resetAt: now + LOOKUP_WINDOW_MS });
-    return false;
-  }
-  entry.count++;
-  return entry.count > LOOKUP_LIMIT;
-}
+const LOOKUP_LIMIT_WINDOW_SECONDS = 60 * 60; // 1 hour
+const LOOKUP_LIMIT_MAX = 30; // 30 lookups per IP per hour
 
 // GET — look up a booking by ref code
 export async function GET(
@@ -26,11 +15,15 @@ export async function GET(
     || request.headers.get('x-real-ip')
     || 'unknown';
 
-  if (process.env.NODE_ENV !== 'development' && isLookupRateLimited(ip)) {
-    return NextResponse.json(
-      { error: 'Too many requests. Please try again later.' },
-      { status: 429 }
-    );
+  if (process.env.NODE_ENV !== 'development') {
+    const rateLimitKey = `ratelimit:lookup:${ip}`;
+    const { allowed } = await checkRateLimit(rateLimitKey, LOOKUP_LIMIT_MAX, LOOKUP_LIMIT_WINDOW_SECONDS);
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Too many requests. Please try again later.' },
+        { status: 429 }
+      );
+    }
   }
 
   const { ref } = await params;
@@ -61,11 +54,15 @@ export async function PATCH(
     || request.headers.get('x-real-ip')
     || 'unknown';
 
-  if (process.env.NODE_ENV !== 'development' && isLookupRateLimited(ip)) {
-    return NextResponse.json(
-      { error: 'Too many requests. Please try again later.' },
-      { status: 429 }
-    );
+  if (process.env.NODE_ENV !== 'development') {
+    const rateLimitKey = `ratelimit:lookup:${ip}`;
+    const { allowed } = await checkRateLimit(rateLimitKey, LOOKUP_LIMIT_MAX, LOOKUP_LIMIT_WINDOW_SECONDS);
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Too many requests. Please try again later.' },
+        { status: 429 }
+      );
+    }
   }
 
   const { ref } = await params;
