@@ -7,8 +7,14 @@ const RATE_LIMIT_WINDOW_SECONDS = 60 * 60; // 1 hour
 const RATE_LIMIT_MAX = 10; // 10 bookings per IP per hour
 
 // ── Cloudflare Turnstile verification ──
-async function verifyTurnstileToken(token: string, ip: string): Promise<boolean> {
-  const secretKey = process.env.CF_TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA';
+async function verifyTurnstileToken(token: string): Promise<boolean> {
+  const secretKey = process.env.CF_TURNSTILE_SECRET_KEY;
+
+  // Skip verification in development (test keys handle this)
+  if (!secretKey) {
+    console.warn('CF_TURNSTILE_SECRET_KEY not set — skipping Turnstile verification');
+    return true;
+  }
   
   try {
     const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
@@ -19,14 +25,18 @@ async function verifyTurnstileToken(token: string, ip: string): Promise<boolean>
       body: new URLSearchParams({
         secret: secretKey,
         response: token,
-        remoteip: ip,
       }),
     });
 
     const data = await response.json();
+    
+    if (!data.success) {
+      console.error('Turnstile verification failed:', JSON.stringify(data));
+    }
+    
     return !!data.success;
   } catch (err) {
-    console.error('Turnstile verification error:', err);
+    console.error('Turnstile verification network error:', err);
     return false;
   }
 }
@@ -129,7 +139,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Verify Turnstile Token
-  const isHuman = await verifyTurnstileToken(body.turnstile_token || '', ip);
+  const isHuman = await verifyTurnstileToken(body.turnstile_token || '');
   if (!isHuman) {
     return NextResponse.json(
       { success: false, error_message: 'Human verification failed. Please try again.' },
