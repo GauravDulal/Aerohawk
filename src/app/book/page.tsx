@@ -1,15 +1,30 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { ToastProvider, useToast } from '@/components/ui/Toast';
 import ConfirmModal from '@/components/ui/ConfirmModal';
+import LoadingSpinner from '@/components/ui/LoadingSpinner';
+import ErrorBoundary from '@/components/ui/ErrorBoundary';
+import BookingConfirmation from '@/components/booking/BookingConfirmation';
 import type { AvailabilitySlot } from '@/lib/types';
 import { formatDate, formatTime, formatTimeRange, isSlotInFuture, getMonthRange, toDateStr } from '@/lib/utils';
 
+// ── Validation ──
+const EMAIL_REGEX = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+const PHONE_REGEX = /^[0-9+\-() ]{5,30}$/;
+
+interface FormErrors {
+  name?: string;
+  phone?: string;
+  email?: string;
+  service?: string;
+  address?: string;
+}
+
 function BookingPageInner() {
-  const supabase = createClient();
+  const supabase = useMemo(() => createClient(), []);
   const { showToast } = useToast();
 
   // Calendar state
@@ -24,6 +39,7 @@ function BookingPageInner() {
   const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
   const [blocked, setBlocked] = useState<string[]>([]);
   const [bookedSlots, setBookedSlots] = useState<{ date: string; start_time: string; end_time: string }[]>([]);
+  const [dataLoading, setDataLoading] = useState(true);
 
   // Form state
   const [name, setName] = useState('');
@@ -33,11 +49,23 @@ function BookingPageInner() {
   const [address, setAddress] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [formErrors, setFormErrors] = useState<FormErrors>({});
 
   // Modal state
   const [modalOpen, setModalOpen] = useState(false);
 
+  // Confirmation state
+  const [confirmation, setConfirmation] = useState<{
+    refCode: string;
+    date: string;
+    startTime: string;
+    endTime: string;
+    service: string;
+    name: string;
+  } | null>(null);
+
   const fetchData = useCallback(async () => {
+    setDataLoading(true);
     const { start, end } = getMonthRange(calYear, calMonth);
 
     const [slotsRes, blockedRes, bookedRes] = await Promise.all([
@@ -49,12 +77,20 @@ function BookingPageInner() {
     if (slotsRes.data) setSlots(slotsRes.data);
     if (blockedRes.data) setBlocked(blockedRes.data.map((b: { date: string }) => b.date));
     if (bookedRes.data) setBookedSlots(bookedRes.data);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calYear, calMonth]);
+    setDataLoading(false);
+  }, [calYear, calMonth, supabase]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    fetchData();
+    let active = true;
+    const load = async () => {
+      if (active) {
+        await fetchData();
+      }
+    };
+    load();
+    return () => {
+      active = false;
+    };
   }, [fetchData]);
 
   // Calendar helpers
@@ -77,36 +113,26 @@ function BookingPageInner() {
     setAnchorSlot(null);
   };
 
-  // Get slots for a specific date
-  const getSlotsForDate = (dateStr: string) => {
-    return slots.filter((s) => s.date === dateStr);
-  };
+  const getSlotsForDate = (dateStr: string) => slots.filter((s) => s.date === dateStr);
 
-  // Check if a specific slot is booked (using interval overlap check)
   const isSlotBooked = (dateStr: string, startTime: string, endTime: string) => {
     return bookedSlots.some(
-      (b) =>
-        b.date === dateStr &&
-        !(b.end_time <= startTime || b.start_time >= endTime)
+      (b) => b.date === dateStr && !(b.end_time <= startTime || b.start_time >= endTime)
     );
   };
 
-  // Get free slots for a date (not booked, not in the past)
   const getFreeSlotsForDate = (dateStr: string) => {
-    const dateSlots = getSlotsForDate(dateStr);
-    return dateSlots.filter(
+    return getSlotsForDate(dateStr).filter(
       (s) => !isSlotBooked(dateStr, s.start_time, s.end_time) && isSlotInFuture(dateStr, s.start_time)
     );
   };
 
-  // Handle date selection
   const handleDateSelect = (dateStr: string) => {
     setSelectedDate(dateStr);
     setSelectedSlots([]);
     setAnchorSlot(null);
   };
 
-  // Handle slot selection (consecutive range stacking using an anchor slot)
   const handleSlotSelect = (slot: AvailabilitySlot) => {
     if (selectedSlots.length === 0 || !anchorSlot) {
       setAnchorSlot(slot);
@@ -118,7 +144,6 @@ function BookingPageInner() {
         return;
       }
 
-      // Sort all configured slots for the day by start_time
       const dateSlots = slots
         .filter((s) => s.date === selectedDate)
         .sort((a, b) => a.start_time.localeCompare(b.start_time));
@@ -127,17 +152,12 @@ function BookingPageInner() {
       const idx2 = dateSlots.findIndex((s) => s.id === slot.id);
 
       if (idx1 !== -1 && idx2 !== -1) {
-        // If the clicked slot is already selected (other than anchor), shrink the range to exclude it
         const isAlreadySelected = selectedSlots.some((s) => s.id === slot.id);
         if (isAlreadySelected) {
           if (idx2 > idx1) {
-            // Shrink from the right (keep slots from anchor up to but not including clicked slot)
-            const candidateSlots = dateSlots.slice(idx1, idx2);
-            setSelectedSlots(candidateSlots);
+            setSelectedSlots(dateSlots.slice(idx1, idx2));
           } else {
-            // Shrink from the left (keep slots from just after the clicked slot up to anchor)
-            const candidateSlots = dateSlots.slice(idx2 + 1, idx1 + 1);
-            setSelectedSlots(candidateSlots);
+            setSelectedSlots(dateSlots.slice(idx2 + 1, idx1 + 1));
           }
           return;
         }
@@ -146,7 +166,6 @@ function BookingPageInner() {
         const maxIdx = Math.max(idx1, idx2);
         const candidateSlots = dateSlots.slice(minIdx, maxIdx + 1);
 
-        // Verify all intermediate slots are available (not booked, not in the past)
         const allAvailable = candidateSlots.every(
           (s) => s.id === anchorSlot.id || s.id === slot.id || (!isSlotBooked(s.date, s.start_time, s.end_time) && isSlotInFuture(s.date, s.start_time))
         );
@@ -154,7 +173,6 @@ function BookingPageInner() {
         if (allAvailable) {
           setSelectedSlots(candidateSlots);
         } else {
-          // If range is blocked by booked/past slots, start a new selection with the clicked slot as anchor
           setAnchorSlot(slot);
           setSelectedSlots([slot]);
         }
@@ -165,61 +183,98 @@ function BookingPageInner() {
     }
   };
 
-  // Form validation
+  // ── Form validation ──
+  const validateForm = (): boolean => {
+    const errors: FormErrors = {};
+    if (!name.trim()) errors.name = 'Name is required.';
+    else if (name.length > 200) errors.name = 'Name is too long (max 200 characters).';
+
+    if (!phone.trim()) errors.phone = 'Phone number is required.';
+    else if (!PHONE_REGEX.test(phone)) errors.phone = 'Enter a valid phone number.';
+
+    if (!email.trim()) errors.email = 'Email is required.';
+    else if (!EMAIL_REGEX.test(email)) errors.email = 'Enter a valid email address.';
+
+    if (!service) errors.service = 'Please select a service.';
+
+    if (!address.trim()) errors.address = 'Address is required.';
+    else if (address.length < 5) errors.address = 'Address is too short.';
+    else if (address.length > 500) errors.address = 'Address is too long (max 500 characters).';
+
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
   const isFormValid = selectedDate && selectedSlots.length > 0 && name && phone && email && service && address;
 
-  // Submit booking
+  // ── Submit booking via API route ──
   const handleSubmit = async () => {
     if (!selectedDate || selectedSlots.length === 0) return;
+
+    if (!validateForm()) {
+      showToast('Please fix the errors above.', 'error');
+      return;
+    }
+
     setSubmitting(true);
 
     const sortedSelected = [...selectedSlots].sort((a, b) => a.start_time.localeCompare(b.start_time));
     const startTime = sortedSelected[0].start_time;
     const endTime = sortedSelected[sortedSelected.length - 1].end_time;
 
-    const { data, error } = await supabase.rpc('book_appointment', {
-      p_name: name,
-      p_phone: phone,
-      p_email: email,
-      p_service: service,
-      p_address: address,
-      p_notes: notes,
-      p_date: selectedDate,
-      p_start_time: startTime,
-      p_end_time: endTime,
-    });
+    try {
+      const response = await fetch('/api/book', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          phone: phone.trim(),
+          email: email.trim(),
+          service,
+          address: address.trim(),
+          notes: notes.trim(),
+          date: selectedDate,
+          start_time: startTime,
+          end_time: endTime,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setConfirmation({
+          refCode: result.ref_code,
+          date: selectedDate,
+          startTime,
+          endTime,
+          service,
+          name: name.trim(),
+        });
+        fetchData();
+      } else {
+        showToast(result.error_message || 'Slot no longer available.', 'error');
+        fetchData();
+      }
+    } catch {
+      showToast('Something went wrong. Please try again.', 'error');
+    }
 
     setSubmitting(false);
-
-    if (error) {
-      showToast('Something went wrong. Please try again.', 'error');
-      return;
-    }
-
-    const result = data?.[0];
-    if (result?.success) {
-      showToast(`✅ Booking confirmed! Your reference: ${result.ref_code}`, 'success');
-      // Reset form
-      setName(''); setPhone(''); setEmail(''); setService('');
-      setAddress(''); setNotes('');
-      setSelectedDate(null); setSelectedSlots([]); setAnchorSlot(null);
-      fetchData();
-    } else {
-      showToast(result?.error_message || 'Slot no longer available.', 'error');
-      fetchData();
-    }
   };
 
-  // Render calendar days
+  const resetBooking = () => {
+    setName(''); setPhone(''); setEmail(''); setService('');
+    setAddress(''); setNotes(''); setFormErrors({});
+    setSelectedDate(null); setSelectedSlots([]); setAnchorSlot(null);
+    setConfirmation(null);
+  };
+
+  // ── Calendar rendering ──
   const renderCalendarDays = () => {
     const cells = [];
-
-    // Empty cells
     for (let i = 0; i < firstDay; i++) {
       cells.push(<div key={`empty-${i}`} className="cal-day empty" />);
     }
-
-    // Day cells
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = toDateStr(calYear, calMonth, d);
       const dateObj = new Date(dateStr + 'T00:00:00');
@@ -243,19 +298,48 @@ function BookingPageInner() {
         <div
           key={dateStr}
           className={className}
+          role="button"
+          tabIndex={hasSlots && !isPast && !isBlocked ? 0 : -1}
+          aria-label={`${d} ${monthNames[calMonth]} ${calYear}${hasSlots ? `, ${freeSlots.length} slots available` : ', no slots'}${isSelected ? ', selected' : ''}`}
+          aria-pressed={isSelected}
+          aria-disabled={isPast || isBlocked || !hasSlots}
           onClick={hasSlots && !isPast && !isBlocked ? () => handleDateSelect(dateStr) : undefined}
+          onKeyDown={hasSlots && !isPast && !isBlocked ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleDateSelect(dateStr); } } : undefined}
         >
           {d}
           {hasSlots && !isPast && !isBlocked && <span className="slot-dot" />}
         </div>
       );
     }
-
     return cells;
   };
 
-  // Get time slots for selected date
   const dateSlots = selectedDate ? getSlotsForDate(selectedDate) : [];
+
+  // ── If confirmed, show confirmation screen ──
+  if (confirmation) {
+    return (
+      <>
+        <div className="topbar">
+          <Link href="/" className="topbar-brand" style={{ textDecoration: 'none' }}>
+            AERO<span>HAWK</span>
+            <span style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.3)', fontFamily: 'var(--font-barlow-condensed)', letterSpacing: '3px', marginLeft: '4px' }}>
+              BOOKING
+            </span>
+          </Link>
+        </div>
+        <BookingConfirmation
+          refCode={confirmation.refCode}
+          date={confirmation.date}
+          startTime={confirmation.startTime}
+          endTime={confirmation.endTime}
+          service={confirmation.service}
+          name={confirmation.name}
+          onBookAnother={resetBooking}
+        />
+      </>
+    );
+  }
 
   return (
     <>
@@ -268,11 +352,7 @@ function BookingPageInner() {
           </span>
         </Link>
         <div style={{ display: 'flex', gap: '0.3rem' }}>
-          <Link
-            href="/book"
-            className="tab-btn active"
-            style={{ textDecoration: 'none' }}
-          >
+          <Link href="/book" className="tab-btn active" style={{ textDecoration: 'none' }}>
             📅 Book a Clean
           </Link>
         </div>
@@ -301,59 +381,69 @@ function BookingPageInner() {
               <h3>Select Date &amp; Time</h3>
             </div>
             <div className="card-body">
-              {/* Calendar nav */}
-              <div className="calendar-nav">
-                <button className="cal-nav-btn" onClick={() => changeMonth(-1)}>‹</button>
-                <span className="cal-month-label">{monthNames[calMonth]} {calYear}</span>
-                <button className="cal-nav-btn" onClick={() => changeMonth(1)}>›</button>
-              </div>
-
-              {/* Calendar grid */}
-              <div className="cal-grid">
-                {dayHeaders.map((dh) => (
-                  <div key={dh} className="cal-day-header">{dh}</div>
-                ))}
-                {renderCalendarDays()}
-              </div>
-
-              {/* Time slots */}
-              {selectedDate && dateSlots.length > 0 && (
-                <div className="slots-container">
-                  <div className="slots-title">Available Times</div>
-                  <div className="slots-grid">
-                    {dateSlots.map((slot) => {
-                      const booked = isSlotBooked(selectedDate, slot.start_time, slot.end_time);
-                      const pastSlot = !isSlotInFuture(selectedDate, slot.start_time);
-                      const isSelected = selectedSlots.some((s) => s.id === slot.id);
-
-                      let btnClass = 'slot-btn';
-                      if (isSelected) btnClass += ' selected';
-                      else if (booked) btnClass += ' booked';
-                      else if (pastSlot) btnClass += ' past-slot';
-
-                      return (
-                        <button
-                          key={slot.id}
-                          className={btnClass}
-                          onClick={!booked && !pastSlot ? () => handleSlotSelect(slot) : undefined}
-                          disabled={booked || pastSlot}
-                        >
-                          {formatTime(slot.start_time)}
-                          <br />
-                          {formatTime(slot.end_time)}
-                          {booked && <span className="booked-label">Taken</span>}
-                          {pastSlot && !booked && <span className="booked-label">Past</span>}
-                        </button>
-                      );
-                    })}
+              {dataLoading ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem 0' }}>
+                  <LoadingSpinner label="Loading availability..." />
+                </div>
+              ) : (
+                <>
+                  {/* Calendar nav */}
+                  <div className="calendar-nav">
+                    <button className="cal-nav-btn" onClick={() => changeMonth(-1)} aria-label="Previous month">‹</button>
+                    <span className="cal-month-label">{monthNames[calMonth]} {calYear}</span>
+                    <button className="cal-nav-btn" onClick={() => changeMonth(1)} aria-label="Next month">›</button>
                   </div>
-                </div>
-              )}
 
-              {selectedDate && dateSlots.length === 0 && (
-                <div style={{ textAlign: 'center', color: 'var(--grey)', fontSize: '0.85rem', padding: '1rem 0' }}>
-                  No available slots on this date.
-                </div>
+                  {/* Calendar grid */}
+                  <div className="cal-grid" role="grid" aria-label="Booking calendar">
+                    {dayHeaders.map((dh) => (
+                      <div key={dh} className="cal-day-header" role="columnheader">{dh}</div>
+                    ))}
+                    {renderCalendarDays()}
+                  </div>
+
+                  {/* Time slots */}
+                  {selectedDate && dateSlots.length > 0 && (
+                    <div className="slots-container">
+                      <div className="slots-title">Available Times</div>
+                      <div className="slots-grid">
+                        {dateSlots.map((slot) => {
+                          const booked = isSlotBooked(selectedDate, slot.start_time, slot.end_time);
+                          const pastSlot = !isSlotInFuture(selectedDate, slot.start_time);
+                          const isSelected = selectedSlots.some((s) => s.id === slot.id);
+
+                          let btnClass = 'slot-btn';
+                          if (isSelected) btnClass += ' selected';
+                          else if (booked) btnClass += ' booked';
+                          else if (pastSlot) btnClass += ' past-slot';
+
+                          return (
+                            <button
+                              key={slot.id}
+                              className={btnClass}
+                              onClick={!booked && !pastSlot ? () => handleSlotSelect(slot) : undefined}
+                              disabled={booked || pastSlot}
+                              aria-label={`${formatTime(slot.start_time)} to ${formatTime(slot.end_time)}${booked ? ', taken' : pastSlot ? ', past' : ''}${isSelected ? ', selected' : ''}`}
+                              aria-pressed={isSelected}
+                            >
+                              {formatTime(slot.start_time)}
+                              <br />
+                              {formatTime(slot.end_time)}
+                              {booked && <span className="booked-label">Taken</span>}
+                              {pastSlot && !booked && <span className="booked-label">Past</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedDate && dateSlots.length === 0 && (
+                    <div style={{ textAlign: 'center', color: 'var(--grey)', fontSize: '0.85rem', padding: '1rem 0' }}>
+                      No available slots on this date.
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -373,20 +463,59 @@ function BookingPageInner() {
             </div>
             <div className="card-body">
               <div className="form-group">
-                <label>Full Name *</label>
-                <input className="form-control" type="text" placeholder="e.g. Jane Smith" value={name} onChange={(e) => setName(e.target.value)} />
+                <label htmlFor="book-name">Full Name *</label>
+                <input
+                  id="book-name"
+                  className={`form-control${formErrors.name ? ' form-error' : ''}`}
+                  type="text"
+                  placeholder="e.g. Jane Smith"
+                  value={name}
+                  onChange={(e) => { setName(e.target.value); setFormErrors((p) => ({ ...p, name: undefined })); }}
+                  maxLength={200}
+                  aria-invalid={!!formErrors.name}
+                  aria-describedby={formErrors.name ? 'name-error' : undefined}
+                />
+                {formErrors.name && <div id="name-error" className="field-error">{formErrors.name}</div>}
               </div>
               <div className="form-group">
-                <label>Phone Number *</label>
-                <input className="form-control" type="tel" placeholder="e.g. 0400 000 000" value={phone} onChange={(e) => setPhone(e.target.value)} />
+                <label htmlFor="book-phone">Phone Number *</label>
+                <input
+                  id="book-phone"
+                  className={`form-control${formErrors.phone ? ' form-error' : ''}`}
+                  type="tel"
+                  placeholder="e.g. 0400 000 000"
+                  value={phone}
+                  onChange={(e) => { setPhone(e.target.value); setFormErrors((p) => ({ ...p, phone: undefined })); }}
+                  maxLength={30}
+                  aria-invalid={!!formErrors.phone}
+                  aria-describedby={formErrors.phone ? 'phone-error' : undefined}
+                />
+                {formErrors.phone && <div id="phone-error" className="field-error">{formErrors.phone}</div>}
               </div>
               <div className="form-group">
-                <label>Email Address *</label>
-                <input className="form-control" type="email" placeholder="jane@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+                <label htmlFor="book-email">Email Address *</label>
+                <input
+                  id="book-email"
+                  className={`form-control${formErrors.email ? ' form-error' : ''}`}
+                  type="email"
+                  placeholder="jane@email.com"
+                  value={email}
+                  onChange={(e) => { setEmail(e.target.value); setFormErrors((p) => ({ ...p, email: undefined })); }}
+                  aria-invalid={!!formErrors.email}
+                  aria-describedby={formErrors.email ? 'email-error' : undefined}
+                />
+                {formErrors.email && <div id="email-error" className="field-error">{formErrors.email}</div>}
               </div>
               <div className="form-group">
-                <label>Service Type *</label>
-                <select className="form-control" value={service} onChange={(e) => setService(e.target.value)}>
+                <label htmlFor="book-service">Service Type *</label>
+                <select
+                  id="book-service"
+                  className={`form-control${formErrors.service ? ' form-error' : ''}`}
+                  value={service}
+                  onChange={(e) => { setService(e.target.value); setFormErrors((p) => ({ ...p, service: undefined })); }}
+                  aria-invalid={!!formErrors.service}
+                  aria-describedby={formErrors.service ? 'service-error' : undefined}
+                >
                   <option value="">— Select a service —</option>
                   <option>Residential Cleaning</option>
                   <option>Office / Commercial Cleaning</option>
@@ -395,14 +524,39 @@ function BookingPageInner() {
                   <option>Carpet &amp; Upholstery</option>
                   <option>Window Cleaning</option>
                 </select>
+                {formErrors.service && <div id="service-error" className="field-error">{formErrors.service}</div>}
               </div>
               <div className="form-group">
-                <label>Address *</label>
-                <input className="form-control" type="text" placeholder="Street, Suburb, State" value={address} onChange={(e) => setAddress(e.target.value)} />
+                <label htmlFor="book-address">Address *</label>
+                <input
+                  id="book-address"
+                  className={`form-control${formErrors.address ? ' form-error' : ''}`}
+                  type="text"
+                  placeholder="Street, Suburb, State"
+                  value={address}
+                  onChange={(e) => { setAddress(e.target.value); setFormErrors((p) => ({ ...p, address: undefined })); }}
+                  maxLength={500}
+                  aria-invalid={!!formErrors.address}
+                  aria-describedby={formErrors.address ? 'address-error' : undefined}
+                />
+                {formErrors.address && <div id="address-error" className="field-error">{formErrors.address}</div>}
               </div>
               <div className="form-group">
-                <label>Notes (optional)</label>
-                <textarea className="form-control" rows={2} placeholder="Anything we should know..." value={notes} onChange={(e) => setNotes(e.target.value)} />
+                <label htmlFor="book-notes">Notes (optional)</label>
+                <textarea
+                  id="book-notes"
+                  className="form-control"
+                  rows={2}
+                  placeholder="Anything we should know..."
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  maxLength={1000}
+                />
+                {notes.length > 0 && (
+                  <div style={{ fontSize: '0.7rem', color: 'var(--grey)', textAlign: 'right', marginTop: '0.2rem' }}>
+                    {notes.length}/1000
+                  </div>
+                )}
               </div>
 
               {/* Booking Summary */}
@@ -432,8 +586,8 @@ function BookingPageInner() {
                 className="btn-book"
                 disabled={!isFormValid || submitting}
                 onClick={() => {
-                  if (!name || !phone || !email || !service || !address) {
-                    showToast('Please fill in all required fields.', 'error');
+                  if (!validateForm()) {
+                    showToast('Please fix the errors above.', 'error');
                     return;
                   }
                   setModalOpen(true);
@@ -470,9 +624,11 @@ function BookingPageInner() {
 export default function BookingPage() {
   return (
     <ToastProvider>
-      <div style={{ background: 'var(--off-white)', minHeight: '100vh' }}>
-        <BookingPageInner />
-      </div>
+      <ErrorBoundary>
+        <div style={{ background: 'var(--off-white)', minHeight: '100vh' }}>
+          <BookingPageInner />
+        </div>
+      </ErrorBoundary>
     </ToastProvider>
   );
 }

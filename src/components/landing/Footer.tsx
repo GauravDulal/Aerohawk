@@ -1,4 +1,10 @@
+'use client';
+
+import Link from 'next/link';
+
 export default function Footer() {
+  const currentYear = new Date().getFullYear();
+
   return (
     <footer>
       <div className="footer-grid">
@@ -22,25 +28,25 @@ export default function Footer() {
         <div className="footer-col">
           <h4>Company</h4>
           <ul>
-            <li><a href="#">About Us</a></li>
-            <li><a href="#">Our Team</a></li>
-            <li><a href="#">Careers</a></li>
+            <li><a href="#why">About Us</a></li>
+            <li><a href="#why">Our Team</a></li>
             <li><a href="#testimonials">Reviews</a></li>
             <li><a href="#cta">Contact</a></li>
+            <li><Link href="/booking">Track Booking</Link></li>
           </ul>
         </div>
         <div className="footer-col">
           <h4>Contact</h4>
           <ul>
             <li><a href="tel:+61400000000">📞 0400 000 000</a></li>
-            <li><a href="mailto:hello@aerohawkcleaning.com.au">✉ hello@aerohawk.com.au</a></li>
-            <li><a href="#">🇦🇺 Australia-Wide</a></li>
-            <li><a href="#">Mon–Sat: 7am–7pm</a></li>
+            <li><a href="mailto:hello@aerohawkcleaning.com.au">✉ hello@aerohawkcleaning.com.au</a></li>
+            <li><a href="#hero">🇦🇺 Australia-Wide</a></li>
+            <li><a href="#cta">Mon–Sat: 7am–7pm</a></li>
           </ul>
         </div>
       </div>
       <div className="footer-bottom">
-        <p>© 2025 AeroHawk Cleaning Services. All rights reserved.</p>
+        <p>© {currentYear} AeroHawk Cleaning Services. All rights reserved.</p>
         <div className="footer-badges">
           <div className="badge">
             <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>

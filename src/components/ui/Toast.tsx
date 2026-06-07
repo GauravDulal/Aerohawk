@@ -29,7 +29,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      <div className={`toast ${visible ? 'show' : ''} ${type}`}>
+      <div className={`toast ${visible ? 'show' : ''} ${type}`} role="alert" aria-live="polite">
         {message}
       </div>
     </ToastContext.Provider>

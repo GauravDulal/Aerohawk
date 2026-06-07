@@ -34,16 +34,17 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
             </span>
           </Link>
           <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
-            <Link href="/book" className="tab-btn" style={{ textDecoration: 'none' }}>
+            <Link href="/book" className={`tab-btn${pathname === '/book' ? ' active' : ''}`} style={{ textDecoration: 'none' }}>
               📅 Booking
             </Link>
-            <Link href="/admin" className="tab-btn active" style={{ textDecoration: 'none' }}>
+            <Link href="/admin" className={`tab-btn${pathname === '/admin' ? ' active' : ''}`} style={{ textDecoration: 'none' }}>
               ⚙ Dashboard
             </Link>
             <button
               className="tab-btn"
               onClick={handleLogout}
               style={{ marginLeft: '0.5rem' }}
+              aria-label="Logout"
             >
               Logout
             </button>
