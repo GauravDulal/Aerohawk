@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { sendBookingCancellation, sendAdminNotification } from '@/lib/resend';
 
 import { checkRateLimit } from '@/lib/redis';
 
@@ -70,7 +71,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Invalid reference code.' }, { status: 400 });
   }
 
-  let body: { action?: string };
+  let body: { action?: string; email?: string };
   try {
     body = await request.json();
   } catch {
@@ -81,17 +82,30 @@ export async function PATCH(
     return NextResponse.json({ error: 'Invalid action.' }, { status: 400 });
   }
 
+  // Phase 9: Require email for secure cancellation
+  if (!body.email || typeof body.email !== 'string' || !body.email.trim()) {
+    return NextResponse.json({ error: 'Email is required to cancel a booking.' }, { status: 400 });
+  }
+
   const supabase = await createClient();
 
-  // Fetch the appointment first
+  // Fetch the full appointment (including email for verification)
   const { data: appt } = await supabase
     .from('appointments')
-    .select('id, status')
+    .select('id, name, email, service, date, start_time, end_time, status, ref_code')
     .eq('ref_code', ref.toUpperCase())
     .single();
 
   if (!appt) {
     return NextResponse.json({ error: 'Booking not found.' }, { status: 404 });
+  }
+
+  // Verify email matches (case-insensitive)
+  if (appt.email.toLowerCase() !== body.email.trim().toLowerCase()) {
+    return NextResponse.json(
+      { error: 'The email address does not match our records for this booking.' },
+      { status: 403 }
+    );
   }
 
   if (appt.status === 'cancelled') {
@@ -110,6 +124,22 @@ export async function PATCH(
   if (error) {
     return NextResponse.json({ error: 'Failed to cancel booking.' }, { status: 500 });
   }
+
+  // Fire-and-forget cancellation emails
+  const emailData = {
+    ref_code: appt.ref_code,
+    name: appt.name,
+    email: appt.email,
+    service: appt.service,
+    date: appt.date,
+    start_time: appt.start_time,
+    end_time: appt.end_time,
+  };
+
+  Promise.allSettled([
+    sendBookingCancellation(emailData),
+    sendAdminNotification(emailData, 'cancellation'),
+  ]).catch((err) => console.error('Cancellation email error:', err));
 
   return NextResponse.json({ success: true, message: 'Booking cancelled successfully.' });
 }

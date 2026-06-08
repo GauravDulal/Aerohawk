@@ -30,6 +30,8 @@ export default function BookingDetailPage({ params }: { params: Promise<{ ref: s
   const [error, setError] = useState('');
   const [cancelling, setCancelling] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [cancelEmail, setCancelEmail] = useState('');
+  const [cancelEmailError, setCancelEmailError] = useState('');
 
   useEffect(() => {
     async function fetchBooking() {
@@ -50,22 +52,33 @@ export default function BookingDetailPage({ params }: { params: Promise<{ ref: s
   }, [ref]);
 
   const handleCancel = async () => {
+    // Validate email
+    if (!cancelEmail.trim()) {
+      setCancelEmailError('Please enter your email address.');
+      return;
+    }
+    if (!/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(cancelEmail.trim())) {
+      setCancelEmailError('Please enter a valid email address.');
+      return;
+    }
+    setCancelEmailError('');
     setCancelling(true);
     try {
       const res = await fetch(`/api/booking/${ref}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'cancel' }),
+        body: JSON.stringify({ action: 'cancel', email: cancelEmail.trim() }),
       });
       const data = await res.json();
       if (res.ok && data.success) {
         setBooking((prev) => prev ? { ...prev, status: 'cancelled' } : null);
         setShowCancelConfirm(false);
+        setCancelEmail('');
       } else {
-        setError(data.error || 'Failed to cancel.');
+        setCancelEmailError(data.error || 'Failed to cancel.');
       }
     } catch {
-      setError('Failed to cancel. Please try again.');
+      setCancelEmailError('Failed to cancel. Please try again.');
     }
     setCancelling(false);
   };
@@ -180,11 +193,36 @@ export default function BookingDetailPage({ params }: { params: Promise<{ ref: s
 
               {showCancelConfirm && (
                 <div style={{ marginTop: '1.5rem', padding: '1rem', background: 'rgba(224,85,85,0.05)', border: '1px solid rgba(224,85,85,0.2)', borderRadius: '4px' }}>
-                  <p style={{ color: 'var(--danger)', fontSize: '0.88rem', marginBottom: '0.8rem' }}>
-                    Are you sure you want to cancel this booking? This cannot be undone.
+                  <p style={{ color: 'var(--danger)', fontSize: '0.88rem', marginBottom: '0.5rem', fontWeight: 600 }}>
+                    Cancel this booking?
                   </p>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button className="btn-cancel" onClick={() => setShowCancelConfirm(false)} style={{ flex: 1 }}>
+                  <p style={{ color: 'var(--grey)', fontSize: '0.82rem', marginBottom: '0.8rem' }}>
+                    To verify your identity, please enter the email address you used when booking.
+                  </p>
+                  <input
+                    type="email"
+                    placeholder="Enter your email address"
+                    value={cancelEmail}
+                    onChange={(e) => { setCancelEmail(e.target.value); setCancelEmailError(''); }}
+                    style={{
+                      width: '100%',
+                      padding: '0.6rem 0.8rem',
+                      border: cancelEmailError ? '1px solid var(--danger)' : '1px solid #ddd',
+                      borderRadius: '4px',
+                      fontSize: '0.88rem',
+                      marginBottom: '0.4rem',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                  {cancelEmailError && (
+                    <p style={{ color: 'var(--danger)', fontSize: '0.78rem', margin: '0 0 0.6rem' }}>{cancelEmailError}</p>
+                  )}
+                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                    <button
+                      className="btn-cancel"
+                      onClick={() => { setShowCancelConfirm(false); setCancelEmail(''); setCancelEmailError(''); }}
+                      style={{ flex: 1 }}
+                    >
                       Keep Booking
                     </button>
                     <button
@@ -193,7 +231,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ ref: s
                       onClick={handleCancel}
                       disabled={cancelling}
                     >
-                      {cancelling ? 'Cancelling...' : 'Yes, Cancel'}
+                      {cancelling ? 'Cancelling...' : 'Confirm Cancel'}
                     </button>
                   </div>
                 </div>

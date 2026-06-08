@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { sendBookingConfirmation, sendAdminNotification } from '@/lib/resend';
 
 import { checkRateLimit } from '@/lib/redis';
 
@@ -171,6 +172,23 @@ export async function POST(request: NextRequest) {
 
   const result = data?.[0];
   if (result?.success) {
+    // Fire-and-forget email notifications (don't block the response)
+    const emailData = {
+      ref_code: result.ref_code,
+      name: body.name.trim(),
+      email: body.email.trim().toLowerCase(),
+      service: body.service,
+      date: body.date,
+      start_time: body.start_time,
+      end_time: body.end_time,
+    };
+
+    // Send emails in parallel, don't await — response goes out immediately
+    Promise.allSettled([
+      sendBookingConfirmation(emailData),
+      sendAdminNotification(emailData, 'new_booking'),
+    ]).catch((err) => console.error('Email send error:', err));
+
     return NextResponse.json({
       success: true,
       ref_code: result.ref_code,
